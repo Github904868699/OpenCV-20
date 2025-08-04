@@ -35,14 +35,27 @@ if QtCore is None or np is None or cv2 is None:
 class HCRequestHandler(socketserver.BaseRequestHandler):
     def handle(self):
         buf = b""
+        last_data_ts = time.time()
+        self.request.settimeout(0.1)
         while True:
-            data = self.request.recv(4096)
-            if not data:
-                break
-            buf += data
-            if b"\n" in buf:
-                msg, buf = buf.split(b"\n", 1)
-                self.server.on_message(msg.decode())
+            try:
+                data = self.request.recv(4096)
+                if not data:
+                    break
+                buf += data
+                last_data_ts = time.time()
+                # ① 优先处理带 \n 的完整行
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    self.server.on_message(line.decode())
+            except socket.timeout:
+                pass
+            # ② 缓冲里没有 \n，但静默超过 1 秒 → 也试着解析
+            if buf and time.time() - last_data_ts > 1.0:
+                self.server.on_message(buf.decode())
+                buf = b""
+        if buf:
+            self.server.on_message(buf.decode())
 
 class HCVisionServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
