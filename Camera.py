@@ -35,7 +35,8 @@ if QtCore is None or np is None or cv2 is None:
 class HCRequestHandler(socketserver.BaseRequestHandler):
     def handle(self):
         buf = b""
-        last_data_ts = time.time()
+        depth = 0
+        start = 0
         self.request.settimeout(0.1)
         while True:
             try:
@@ -43,19 +44,24 @@ class HCRequestHandler(socketserver.BaseRequestHandler):
                 if not data:
                     break
                 buf += data
-                last_data_ts = time.time()
-                # ① 优先处理带 \n 的完整行
-                while b"\n" in buf:
-                    line, buf = buf.split(b"\n", 1)
-                    self.server.on_message(line.decode())
+                i = 0
+                while i < len(buf):
+                    bch = buf[i:i+1]
+                    if bch == b"{":
+                        if depth == 0:
+                            start = i
+                        depth += 1
+                    elif bch == b"}" and depth:
+                        depth -= 1
+                        if depth == 0:
+                            seg = buf[start:i + 1]
+                            text = seg.decode("utf-8", errors="ignore")
+                            self.server.on_message(text)
+                            buf = buf[i + 1:]
+                            i = -1
+                    i += 1
             except socket.timeout:
-                pass
-            # ② 缓冲里没有 \n，但静默超过 1 秒 → 也试着解析
-            if buf and time.time() - last_data_ts > 1.0:
-                self.server.on_message(buf.decode())
-                buf = b""
-        if buf:
-            self.server.on_message(buf.decode())
+                continue
 
 class HCVisionServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
@@ -193,6 +199,8 @@ class TcpSender:
 
     def _recv_loop(self):
         buf = b""
+        depth = 0
+        start = 0
         while True:
             try:
                 data = self.sock.recv(4096)
@@ -200,13 +208,25 @@ class TcpSender:
                     print("[TCP] 连接已关闭")
                     break
                 buf += data
-                while b"\n" in buf:
-                    line, buf = buf.split(b"\n", 1)
-                    text = line.decode("utf-8", errors="ignore")
-                    if self.on_recv:
-                        self.on_recv(text)
-                    else:
-                        print("[TCP] 收到:", text)
+                i = 0
+                while i < len(buf):
+                    bch = buf[i:i+1]
+                    if bch == b"{":
+                        if depth == 0:
+                            start = i
+                        depth += 1
+                    elif bch == b"}" and depth:
+                        depth -= 1
+                        if depth == 0:
+                            seg = buf[start:i + 1]
+                            text = seg.decode("utf-8", errors="ignore")
+                            if self.on_recv:
+                                self.on_recv(text)
+                            else:
+                                print("[TCP] 收到:", text)
+                            buf = buf[i + 1:]
+                            i = -1
+                    i += 1
             except Exception as e:
                 print("[TCP] 接收失败:", e)
                 break
@@ -675,7 +695,7 @@ class MainWindow(QtWidgets.QWidget):
     @QtCore.pyqtSlot(str)
     def _process_tcp_msg(self, text: str):
         """Callback for data received from the remote TCP server."""
-        self.append_log(f"[TCP 收到] {text}")
+        self.append_log(f"[TCP] 收到: {text}")
         try:
             cmd = json.loads(text)
         except Exception as e:
