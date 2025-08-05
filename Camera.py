@@ -305,6 +305,7 @@ class QTextEditLogger(QtCore.QObject):
 # 主窗口
 class MainWindow(QtWidgets.QWidget):
     FPS_CALC_INTERVAL = 30
+    MAX_FAILED_READS = 10
     tcp_msg_sig = QtCore.pyqtSignal(str)
 
     def __init__(self, colors: List[ColorCfg]):
@@ -346,6 +347,7 @@ class MainWindow(QtWidgets.QWidget):
 
         # 摄像头初始化
         self.capture = None
+        self.fail_cnt = 0
         self.cam_combo.currentIndexChanged.connect(self.open_camera)
         self.open_camera()
 
@@ -678,12 +680,20 @@ class MainWindow(QtWidgets.QWidget):
             return
         if self.capture:
             self.capture.release(); self.capture = None
-        self.capture = cv2.VideoCapture(idx,cv2.CAP_MSMF)
+        for backend in (cv2.CAP_MSMF, getattr(cv2, "CAP_DSHOW", cv2.CAP_ANY), cv2.CAP_ANY):
+            cap = cv2.VideoCapture(idx, backend)
+            if cap.isOpened():
+                self.capture = cap
+                break
+        if not self.capture or not self.capture.isOpened():
+            print(f"[摄像头] 无法打开: {idx}")
+            return
         self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         self.frame_cnt = 0
         self.last_time = time.time()
         self.fps = 0.0
+        self.fail_cnt = 0
     # ------------------- 掩膜窗口 -------------------
     def toggle_mask(self, name: str):
         if name in self.mask_windows and self.mask_windows[name].isVisible():
@@ -698,7 +708,12 @@ class MainWindow(QtWidgets.QWidget):
             return
         ok, frame = self.capture.read()
         if not ok or frame is None or frame.size == 0:
+            self.fail_cnt += 1
+            if self.fail_cnt >= self.MAX_FAILED_READS:
+                print("[摄像头] 读取失败，尝试重新打开")
+                self.open_camera()
             return
+        self.fail_cnt = 0
         self.frame_cnt += 1
         if self.frame_cnt % self.FPS_CALC_INTERVAL == 0:
             now = time.time()
